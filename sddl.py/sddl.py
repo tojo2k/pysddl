@@ -15,8 +15,9 @@ __version__ = '0.1'
 __updated__ = '2008-07-14'
 
 import re
-import wmi # Tim Golden's wmi module
-           # at http://tgolden.sc.sabren.com/python/wmi.html
+
+# Using API functions from the pywin32 package is MUCH faster than WMI
+from win32security import LookupAccountSid,GetBinarySid
 
 re_valid_string = re.compile('^[ADO][ADLU]?\:\(.*\)$')
 re_perms = re.compile('\(([^\(\)]+)\)')
@@ -86,6 +87,43 @@ ACCESS = {# ACE Types
           'KE': 'KEY_EXECUTE'}
 
 
+"""
+    Access Mask: 32-bits
+     ___________________________________
+    | Bit(s)  | Meaning                 |
+     -----------------------------------
+    | 0 - 15  | Object Access Rights    |
+    | 16 - 22 | Standard Access Rights  |
+    | 23      | Can access security ACL |
+    | 24 - 27 | Reserved                |
+    | 28 - 31 | Generic Access Rights   |
+     -----------------------------------
+"""
+ACCESS_HEX = {
+          # Generic Access Rights
+          0x10000000: 'GA',
+          0x20000000: 'GX',
+          0x40000000: 'GW',
+          0x80000000: 'GR',
+
+          # Standard Access Rights
+          0x00010000: 'SD',
+          0x00020000: 'RC',
+          0x00040000: 'WD',
+          0x00080000: 'WO',
+
+          # Object Access Rights
+          0x00000001: 'CC',
+          0x00000002: 'DC',
+          0x00000004: 'LC',
+          0x00000008: 'SW',
+          0x00000010: 'RP',
+          0x00000020: 'WP',
+          0x00000040: 'DT',
+          0x00000080: 'LO',
+          0x00000100: 'CR'}
+
+
 TRUSTEE = {'AO': 'Account Operators',
            'RU': 'Pre-Win2k Compatibility Access',
            'AN': 'Anonymous',
@@ -142,7 +180,7 @@ class InvalidSddlStringError(Error):
 
 
 class InvalidSddlTypeError(Error):
-  """The type sepcified must be O, G, D, or S."""
+  """The type specified must be O, G, D, or S."""
 
 
 class InvalidAceStringError(Error):
@@ -159,10 +197,13 @@ def TranslateSid(sid_string):
     A string with the account name if the name resolves.
     None if the name is not found.
   """
-  account = wmi.WMI().Get('Win32_SID.SID="' + sid_string + '"')
+  account = LookupAccountSid(None, GetBinarySid(sid_string))
 
   if account:
-    return account.ReferencedDomainName + '\\' + account.AccountName
+    if len(account[1]):
+      return account[1] + '\\' + account[0]
+    else:
+      return account[0]
 
 
 def SortAceByTrustee(x, y):
@@ -176,6 +217,25 @@ def SortAceByTrustee(x, y):
     The results of a cmp() between the objects.
   """
   return cmp(x.trustee, y.trustee)
+
+
+def AccessFromHex(hex):
+  """Convert a hex access rights specifier to it's string equivalent.
+
+  Args:
+    hex: The hexadecimal string to be converted
+
+  Returns:
+    A string containing the converted access rights
+  """
+  hex = int(hex, 16)
+  rights = ""
+
+  for spec in ACCESS_HEX.iteritems():
+    if hex & spec[0]:
+      rights += spec[1]
+
+  return rights
 
 
 class ACE(object):
@@ -212,6 +272,9 @@ class ACE(object):
       else:
         self.flags.append(flag)
 
+    if fields[2][0:2] == '0x':  # If specified in hex
+      fields[2] = AccessFromHex(fields[2])
+
     for perm in re.findall(re_const, fields[2]):
       if LOCAL_ACCESS[perm]:
         self.perms.append(LOCAL_ACCESS[perm])
@@ -223,7 +286,7 @@ class ACE(object):
     self.inherited_type = fields[4]
     self.trustee = None
 
-    if TRUSTEE[fields[5]]:
+    if TRUSTEE.has_key(fields[5]):
       self.trustee = TRUSTEE[fields[5]]
 
     if not self.trustee:
@@ -316,4 +379,3 @@ class SDDL(object):
 
       else:
         raise InvalidSddlStringError
-
